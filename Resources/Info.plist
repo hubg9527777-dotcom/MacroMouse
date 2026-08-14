@@ -2,33 +2,22 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- 应用标识 -->
     <key>CFBundleName</key>
     <string>MacroMouse</string>
     <key>CFBundleIdentifier</key>
     <string>com.yourname.macromouse</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>4</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.1</string>
+    <string>1.1.2</string>
     <key>CFBundleExecutable</key>
     <string>MacroMouse</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
-
-    <!-- 菜单栏应用（不在 Dock 显示） -->
     <key>LSUIElement</key>
     <true/>
-
-    <!-- 辅助功能权限说明（系统弹窗显示） -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>MacroMouse 需要控制其他应用以执行复制、粘贴、剪切、窗口最大化/最小化、回车等手势操作。</string>
-
-    <!-- 通知权限 -->
-    <key>NSUserNotificationsUsageDescription</key>
-    <string>MacroMouse 通过通知告知手势执行结果。</string>
-
-    <!-- 最低 macOS 版本 -->
+    <string>MacroMouse 需要控制其他应用以执行复制、粘贴、剪切、窗口最大化或最小化、回车等用户定义的手势操作。</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
 </dict>

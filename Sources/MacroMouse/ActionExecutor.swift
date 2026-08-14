@@ -1,137 +1,136 @@
 import Cocoa
-import UserNotifications
-import Carbon.HIToolbox
+import Carbon
+import ApplicationServices
 
-/// 所有手势对应的执行逻辑
+/// 所有手势动作的唯一执行入口。输入事件与窗口操作均建立在辅助功能权限之上。
 enum ActionExecutor {
-
-    // MARK: - 基础编辑
-    static func performCopy()  { postKeyboardShortcut(keyCode: kVK_ANSI_C, flags: .maskCommand) }
-    static func performPaste() { postKeyboardShortcut(keyCode: kVK_ANSI_V, flags: .maskCommand) }
-    static func performCut()   { postKeyboardShortcut(keyCode: kVK_ANSI_X, flags: .maskCommand) }
-
-    // MARK: - 回车（危险操作，仅由「右键快速双击」触发）
-    static func performEnter() { postKeyboardShortcut(keyCode: kVK_Return, flags: []) }
-
-    // MARK: - 随机文本粘贴
-    static func pasteRandomLine() {
-        let path = Config.shared.textFilePath
-        print("📂 文本文件路径：\(path)")
-
-        guard FileManager.default.fileExists(atPath: path) else {
-            print("❌ 文件不存在：\(path)")
-            DispatchQueue.main.async {
-                let a = NSAlert()
-                a.messageText     = "找不到文本文件"
-                a.informativeText = "路径：\(path)\n\n请打开菜单栏图标 → 偏好设置，设置正确的文件路径并保存。"
-                a.runModal()
-            }
+    // AXFullScreen 是公开的辅助功能属性名，但部分 Swift SDK 未导出对应常量。
+    private static let axFullScreenAttribute = "AXFullScreen" as CFString
+    static func execute(_ action: GestureAction) {
+        switch action.kind {
+        case .none:
             return
+        case .copy:
+            postKeyboardShortcut(keyCode: kVK_ANSI_C, flags: .maskCommand)
+        case .paste:
+            postKeyboardShortcut(keyCode: kVK_ANSI_V, flags: .maskCommand)
+        case .cut:
+            postKeyboardShortcut(keyCode: kVK_ANSI_X, flags: .maskCommand)
+        case .undo:
+            postKeyboardShortcut(keyCode: kVK_ANSI_Z, flags: .maskCommand)
+        case .redo:
+            postKeyboardShortcut(keyCode: kVK_ANSI_Z, flags: [.maskCommand, .maskShift])
+        case .randomText:
+            let customPath = action.randomTextPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            pasteRandomLine(from: customPath.isEmpty ? Config.shared.textFilePath : customPath)
+        case .minimizeWindow:
+            postKeyboardShortcut(keyCode: kVK_ANSI_M, flags: .maskCommand)
+        case .toggleFullScreen:
+            toggleFullScreen()
+        case .confirm:
+            postKeyboardShortcut(keyCode: kVK_Return, flags: [])
+        case .keyboardShortcut:
+            guard let shortcut = action.shortcut else {
+                print("⚠️ 自定义快捷键尚未录制，已跳过")
+                return
+            }
+            postKeyboardShortcut(keyCode: Int(shortcut.keyCode), flags: shortcut.flags)
         }
+    }
 
-        do {
-            let content = try String(contentsOfFile: path, encoding: .utf8)
-            let lines = content
-                .components(separatedBy: .newlines)
-                .map    { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty && !$0.hasPrefix("#") }   // 空行和 # 开头的注释行都不参与随机抽取
-
-            print("📄 读到 \(lines.count) 行：\(lines)")
-
-            guard !lines.isEmpty else {
-                DispatchQueue.main.async {
-                    let a = NSAlert()
-                    a.messageText     = "文件为空"
-                    a.informativeText = "文本文件中没有可用内容，请添加一些行。"
-                    a.runModal()
+    /// 文件 I/O 和文本解析在后台完成，主线程仅更新剪贴板并投递快捷键。
+    private static func pasteRandomLine(from path: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let attributes = try FileManager.default.attributesOfItem(atPath: path)
+                if let size = attributes[.size] as? NSNumber, size.int64Value > 10 * 1024 * 1024 {
+                    throw NSError(domain: "MacroMouse", code: 1, userInfo: [NSLocalizedDescriptionKey: "随机文本文件不能超过 10 MB"])
                 }
+
+                let content = try String(contentsOfFile: path, encoding: .utf8)
+                // 避免一个异常超长单行占用大量剪贴板或令目标应用短暂失去响应。
+                let maximumLineBytes = 64 * 1024
+                let lines = content
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && !$0.hasPrefix("#") && $0.lengthOfBytes(using: .utf8) <= maximumLineBytes }
+                guard let selectedLine = lines.randomElement() else {
+                    throw NSError(domain: "MacroMouse", code: 2, userInfo: [NSLocalizedDescriptionKey: "文本文件中没有不超过 64 KB 的可用内容"])
+                }
+
+                DispatchQueue.main.async {
+                    NSPasteboard.general.clearContents()
+                    guard NSPasteboard.general.setString(selectedLine, forType: .string) else {
+                        print("⚠️ 无法写入系统剪贴板")
+                        return
+                    }
+                    postKeyboardShortcut(keyCode: kVK_ANSI_V, flags: .maskCommand)
+                }
+            } catch {
+                // 不记录文件内容，仅记录可诊断的错误原因。
+                print("⚠️ 随机文本动作失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 使用公开的 AXFullScreen 属性；失败时不阻塞鼠标事件线程。
+    private static func toggleFullScreen() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard AXIsProcessTrusted() else {
+                print("⚠️ 未获得辅助功能权限，无法切换全屏")
                 return
             }
 
-            let line = lines.randomElement()!
-            print("📝 随机选中：\(line)")
+            let systemWide = AXUIElementCreateSystemWide()
+            AXUIElementSetMessagingTimeout(systemWide, 0.1)
+            guard let application = copyAXElement(systemWide, attribute: kAXFocusedApplicationAttribute as CFString),
+                  let window = copyAXElement(application, attribute: kAXFocusedWindowAttribute as CFString)
+            else {
+                print("⚠️ 未找到可切换全屏的窗口")
+                return
+            }
+            AXUIElementSetMessagingTimeout(window, 0.1)
 
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(line, forType: .string)
-            postKeyboardShortcut(keyCode: kVK_ANSI_V, flags: .maskCommand)
-
-        } catch {
-            print("❌ 读取失败：\(error)")
-            DispatchQueue.main.async {
-                let a = NSAlert()
-                a.messageText     = "读取文件失败"
-                a.informativeText = error.localizedDescription
-                a.runModal()
+            var value: CFTypeRef?
+            let readResult = AXUIElementCopyAttributeValue(window, axFullScreenAttribute, &value)
+            guard readResult == .success, let currentValue = bool(from: value) else {
+                print("⚠️ 当前窗口不支持全屏切换")
+                return
+            }
+            let setResult = AXUIElementSetAttributeValue(
+                window,
+                axFullScreenAttribute,
+                currentValue ? kCFBooleanFalse : kCFBooleanTrue
+            )
+            if setResult != .success {
+                print("⚠️ 全屏切换失败：\(setResult.rawValue)")
             }
         }
     }
 
-    // MARK: - 最小化当前窗口（⌘M）
-    static func minimizeWindow() {
-        postKeyboardShortcut(keyCode: kVK_ANSI_M, flags: .maskCommand)
-    }
-
-    // MARK: - 最大化（全屏切换）当前窗口
-    //
-    // macOS 没有统一最大化快捷键，用 AppleScript + AXFullScreen 属性实现。
-    // 修复：放到后台线程执行，避免 AppleScript 的 IPC 延迟阻塞主线程。
-    // CGEvent 键盘模拟必须在主线程；AppleScript 可以在任意线程。
-    //
-    static func maximizeWindow() {
-        DispatchQueue.global(qos: .userInteractive).async {
-            let script = """
-            tell application "System Events"
-                set frontApp to first application process whose frontmost is true
-                tell frontApp
-                    if exists window 1 then
-                        set isFullScreen to value of attribute "AXFullScreen" of window 1
-                        set value of attribute "AXFullScreen" of window 1 to not isFullScreen
-                    end if
-                end tell
-            end tell
-            """
-            runAppleScript(script, errorTitle: "最大化失败")
-        }
-    }
-
-    // MARK: - AppleScript 执行（内部工具，可在任意线程调用）
-    private static func runAppleScript(_ source: String, errorTitle: String) {
-        guard let script = NSAppleScript(source: source) else { return }
-        var errorDict: NSDictionary?
-        script.executeAndReturnError(&errorDict)
-        if let err = errorDict {
-            print("⚠️ AppleScript 错误（\(errorTitle)）：\(err)")
-        }
-    }
-
-    // MARK: - 模拟键盘快捷键（底层 CGEvent，主线程调用）
     static func postKeyboardShortcut(keyCode: Int, flags: CGEventFlags) {
         let source = CGEventSource(stateID: .combinedSessionState)
-        let vk = CGKeyCode(UInt16(keyCode))
-        guard
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vk, keyDown: true),
-            let keyUp   = CGEvent(keyboardEventSource: source, virtualKey: vk, keyDown: false)
+        let key = CGKeyCode(UInt16(keyCode))
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
         else { return }
         keyDown.flags = flags
-        keyUp.flags   = flags
+        keyUp.flags = flags
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
     }
 
-    // MARK: - 系统通知
-    static func showNotification(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body  = body
-        content.sound = .default
-        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req) { if let e = $0 { print("通知失败：\(e)") } }
+    private static func copyAXElement(_ element: AXUIElement, attribute: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID()
+        else { return nil }
+        return unsafeBitCast(value, to: AXUIElement.self)
     }
 
-    static func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error { print("通知权限请求失败：\(error)") }
-            if !granted  { print("⚠️ 用户未授权通知") }
-        }
+    private static func bool(from value: CFTypeRef?) -> Bool? {
+        guard let value, CFGetTypeID(value) == CFBooleanGetTypeID() else { return nil }
+        return CFBooleanGetValue(unsafeBitCast(value, to: CFBoolean.self))
     }
 }

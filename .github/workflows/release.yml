@@ -1,0 +1,70 @@
+name: Release MacroMouse with provenance
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# contents: write is for the Release; the other permissions are required for GitHub Artifact Attestations.
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-attest-release:
+    name: Build, attest, and publish macOS release
+    runs-on: macos-14
+
+    steps:
+      - name: Check out immutable release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build universal application package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x build.sh
+          ./build.sh universal
+          test -f dist/MacroMouse-macOS.zip
+
+      - name: Validate payload and create checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP="dist/MacroMouse.app"
+          ZIP="dist/MacroMouse-macOS.zip"
+
+          plutil -lint "$APP/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "4"
+
+          ARCHES="$(lipo -archs "$APP/Contents/MacOS/MacroMouse")"
+          [[ " $ARCHES " == *" arm64 "* ]]
+          [[ " $ARCHES " == *" x86_64 "* ]]
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
+
+      # Attest the exact final ZIP that is uploaded in the next step. Do not attest an intermediate artifact.
+      - name: Generate provenance for final Release ZIP
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/MacroMouse-macOS.zip
+
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            dist/MacroMouse-macOS.zip \
+            dist/MacroMouse-macOS.zip.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "MacroMouse ${VERSION}" \
+            --generate-notes \
+            --verify-tag

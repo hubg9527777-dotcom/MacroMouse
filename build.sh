@@ -1,60 +1,66 @@
 #!/usr/bin/env bash
-# build.sh <arm64|x86_64>
-# 输出固定文件名（不含版本号），由 GitHub Actions workflow 负责重命名注入版本
-set -e
+# build.sh <arm64|x86_64|universal>
+# universal 会构建 arm64 和 x86_64 两个切片，生成可原生运行于 Apple Silicon 与 Intel 的安装包。
+set -euo pipefail
 
-ARCH="$1"
-if [ -z "${ARCH}" ]; then
-    echo "❌ 用法: ./build.sh <arm64|x86_64>"
-    exit 1
-fi
-
+ARCH="${1:-}"
 APP_NAME="MacroMouse"
 
 case "${ARCH}" in
-    arm64)  LABEL="macOS" ;;
-    x86_64) LABEL="Intel" ;;
+    arm64)    LABEL="macOS" ;;
+    x86_64)   LABEL="Intel" ;;
+    universal) LABEL="macOS" ;;
     *)
-        echo "❌ 不支持的架构: ${ARCH}"
+        echo "❌ 用法: ./build.sh <arm64|x86_64|universal>"
         exit 1
         ;;
 esac
 
 APP_DIR="dist/${APP_NAME}.app"
-# 兼容两种 SPM 构建产物布局：
-#   传统布局：.build/<arch>-apple-macosx/release/<APP_NAME>
-#   XCBuild 布局（较新 Xcode 工具链默认）：.build/out/Products/Release/<APP_NAME>
-LEGACY_BIN_PATH=".build/${ARCH}-apple-macosx/release/${APP_NAME}"
-XCBUILD_BIN_PATH=".build/out/Products/Release/${APP_NAME}"
-# 固定文件名，不含版本号，供 workflow Dynamic Rename 步骤使用
+BIN_DEST="${APP_DIR}/Contents/MacOS/${APP_NAME}"
 ZIP_NAME="${APP_NAME}-${LABEL}.zip"
 
-echo "🔨 编译 ${ARCH}（${LABEL}）..."
-swift build -c release --arch "${ARCH}"
+build_single_arch() {
+    local target_arch="$1"
+    local destination="$2"
+    local legacy_bin=".build/${target_arch}-apple-macosx/release/${APP_NAME}"
+    local xcbuild_bin=".build/out/Products/Release/${APP_NAME}"
+    local candidate=""
 
-echo "📦 打包 .app..."
-rm -rf dist && mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
+    echo "🔨 编译 ${target_arch}..."
+    swift build -c release --product "${APP_NAME}" --arch "${target_arch}" -j 1
 
-if [ -f "${LEGACY_BIN_PATH}" ]; then
-    BIN_PATH="${LEGACY_BIN_PATH}"
-elif [ -f "${XCBUILD_BIN_PATH}" ]; then
-    BIN_PATH="${XCBUILD_BIN_PATH}"
+    if [ -f "${legacy_bin}" ]; then
+        candidate="${legacy_bin}"
+    elif [ -f "${xcbuild_bin}" ]; then
+        candidate="${xcbuild_bin}"
+    else
+        candidate="$(find .build -type f -name "${APP_NAME}" \( -path "*/Release/*" -o -path "*/release/*" \) -not -path "*.dSYM/*" 2>/dev/null | head -1 || true)"
+    fi
+
+    if [ -z "${candidate}" ] || [ ! -f "${candidate}" ]; then
+        echo "❌ 找不到 ${target_arch} 可执行文件"
+        exit 1
+    fi
+    cp "${candidate}" "${destination}"
+}
+
+rm -rf dist
+mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
+
+if [ "${ARCH}" = "universal" ]; then
+    temp_dir="$(mktemp -d)"
+    trap 'rm -rf "${temp_dir}"' EXIT
+    build_single_arch arm64 "${temp_dir}/${APP_NAME}-arm64"
+    build_single_arch x86_64 "${temp_dir}/${APP_NAME}-x86_64"
+    echo "🧬 合并通用二进制（arm64 + x86_64）..."
+    lipo -create "${temp_dir}/${APP_NAME}-arm64" "${temp_dir}/${APP_NAME}-x86_64" -output "${BIN_DEST}"
+    lipo -info "${BIN_DEST}"
 else
-    # 兜底：全目录搜索一次，防止未来工具链又换了布局
-    BIN_PATH="$(find .build -type f -name "${APP_NAME}" \( -path "*/Release/*" -o -path "*/release/*" \) -not -path "*.dSYM/*" 2>/dev/null | head -1)"
+    build_single_arch "${ARCH}" "${BIN_DEST}"
 fi
 
-if [ -z "${BIN_PATH}" ] || [ ! -f "${BIN_PATH}" ]; then
-    echo "❌ 找不到可执行文件，已尝试："
-    echo "   - ${LEGACY_BIN_PATH}"
-    echo "   - ${XCBUILD_BIN_PATH}"
-    exit 1
-fi
-echo "✅ 找到可执行文件：${BIN_PATH}"
-
-cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/"
 cp "Resources/Info.plist" "${APP_DIR}/Contents/"
-
 if [ -f "Resources/AppIcon.icns" ]; then
     cp "Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/"
 fi
@@ -64,5 +70,4 @@ codesign --force --deep -s - "${APP_DIR}"
 
 echo "🗜  压缩为 ${ZIP_NAME}..."
 ( cd dist && ditto -c -k --sequesterRsrc --keepParent "${APP_NAME}.app" "${ZIP_NAME}" )
-
 echo "✅ 完成：dist/${ZIP_NAME}"
