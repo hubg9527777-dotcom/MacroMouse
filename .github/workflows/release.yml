@@ -4,8 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag to rebuild, attest, and upload'
+        required: true
+        type: string
 
-# contents: write is for the Release; the other permissions are required for GitHub Artifact Attestations.
 permissions:
   contents: write
   id-token: write
@@ -15,11 +20,14 @@ jobs:
   build-attest-release:
     name: Build, attest, and publish macOS release
     runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
-      - name: Check out immutable release tag
+      - name: Check out immutable release source
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag || github.ref }}
           fetch-depth: 0
 
       - name: Build universal application package
@@ -30,41 +38,47 @@ jobs:
           ./build.sh universal
           test -f dist/MacroMouse-macOS.zip
 
-      - name: Validate payload and create checksum
+      - name: Validate final payload and create checksum
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           APP="dist/MacroMouse.app"
           ZIP="dist/MacroMouse-macOS.zip"
 
           plutil -lint "$APP/Contents/Info.plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "4"
-
           ARCHES="$(lipo -archs "$APP/Contents/MacOS/MacroMouse")"
           [[ " $ARCHES " == *" arm64 "* ]]
           [[ " $ARCHES " == *" x86_64 "* ]]
           codesign --verify --deep --strict --verbose=2 "$APP"
           shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
 
-      # Attest the exact final ZIP that is uploaded in the next step. Do not attest an intermediate artifact.
+      # The attested subject is the same exact ZIP replaced in the Release step below.
       - name: Generate provenance for final Release ZIP
         uses: actions/attest@v4
         with:
           subject-path: dist/MacroMouse-macOS.zip
 
-      - name: Publish GitHub Release assets
+      - name: Upsert final Release assets without deleting the existing Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" \
-            dist/MacroMouse-macOS.zip \
-            dist/MacroMouse-macOS.zip.sha256 \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "MacroMouse ${VERSION}" \
-            --generate-notes \
-            --verify-tag
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              dist/MacroMouse-macOS.zip \
+              dist/MacroMouse-macOS.zip.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              dist/MacroMouse-macOS.zip \
+              dist/MacroMouse-macOS.zip.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "MacroMouse ${RELEASE_TAG#v}" \
+              --generate-notes \
+              --verify-tag
+          fi
