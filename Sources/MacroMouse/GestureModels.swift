@@ -129,14 +129,20 @@ struct KeyboardShortcut: Codable, Equatable {
 
     var flags: CGEventFlags { CGEventFlags(rawValue: modifierFlags) }
 
-    var displayString: String {
-        let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+    static func modifierDisplayString(_ flags: NSEvent.ModifierFlags) -> String {
         var result = ""
         if flags.contains(.control) { result += "⌃" }
         if flags.contains(.option)  { result += "⌥" }
         if flags.contains(.shift)   { result += "⇧" }
         if flags.contains(.command) { result += "⌘" }
-        return result + KeyboardShortcut.keyName(for: keyCode)
+        if flags.contains(.function) { result += "fn" }
+        if flags.contains(.capsLock) { result += "⇪" }
+        return result
+    }
+
+    var displayString: String {
+        let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlags))
+        return Self.modifierDisplayString(flags) + KeyboardShortcut.keyName(for: keyCode)
     }
 
     static func keyName(for keyCode: UInt16) -> String {
@@ -147,11 +153,83 @@ struct KeyboardShortcut: Codable, Equatable {
             23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0",
             30: "]", 31: "O", 32: "U", 33: "[", 34: "I", 35: "P", 37: "L",
             38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/",
-            45: "N", 46: "M", 47: ".", 49: "空格", 36: "↩", 48: "⇥", 51: "⌫",
-            53: "⎋", 115: "Home", 119: "End", 116: "Page Up", 121: "Page Down",
+            45: "N", 46: "M", 47: ".", 49: "空格", 50: "~", 36: "↩", 48: "tab", 51: "⌫",
+            53: "esc", 115: "Home", 117: "⌦", 119: "End", 116: "Page Up", 121: "Page Down",
+            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+            98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
             123: "←", 124: "→", 125: "↓", 126: "↑"
         ]
         return names[keyCode] ?? "键码\(keyCode)"
+    }
+
+    /// 将用户可编辑或从其他应用粘贴的快捷键文本解析为硬件键码。
+    /// 接受“⌃↑”“Ctrl+Up”“Command Shift Z”“^A”“⌘⇧Z”“控制+上”等写法。
+    static func parseEditableText(_ text: String) -> KeyboardShortcut? {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, raw.count <= 64 else { return nil }
+
+        var flags: NSEvent.ModifierFlags = []
+        var working = raw.uppercased()
+
+        let symbolicModifiers: [(String, NSEvent.ModifierFlags)] = [
+            ("⌃", .control), ("^", .control), ("⌥", .option), ("⇧", .shift),
+            ("⌘", .command), ("⇪", .capsLock)
+        ]
+        for (symbol, flag) in symbolicModifiers where working.contains(symbol) {
+            flags.insert(flag)
+            working = working.replacingOccurrences(of: symbol, with: "")
+        }
+
+        // 长词优先，避免 CAPSLOCK 被先按 CAPS 截断。
+        let namedModifiers: [(String, NSEvent.ModifierFlags)] = [
+            ("CONTROL", .control), ("CTRL", .control), ("控制", .control),
+            ("OPTION", .option), ("ALT", .option), ("OPT", .option), ("选项", .option),
+            ("COMMAND", .command), ("CMD", .command), ("命令", .command),
+            ("SHIFT", .shift), ("⇧", .shift), ("上档", .shift),
+            ("FUNCTION", .function), ("FN", .function),
+            ("CAPSLOCK", .capsLock), ("CAPS", .capsLock), ("大写锁定", .capsLock)
+        ]
+        for (name, flag) in namedModifiers where working.contains(name) {
+            flags.insert(flag)
+            working = working.replacingOccurrences(of: name, with: "")
+        }
+
+        working = working
+            .replacingOccurrences(of: "+", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\t", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let keyCode = keyCode(forEditablePrimaryKey: working) else { return nil }
+        return KeyboardShortcut(keyCode: keyCode, flags: flags)
+    }
+
+    private static func keyCode(forEditablePrimaryKey value: String) -> UInt16? {
+        let namedKeys: [String: UInt16] = [
+            "↑": 126, "UP": 126, "ARROWUP": 126, "上": 126,
+            "↓": 125, "DOWN": 125, "ARROWDOWN": 125, "下": 125,
+            "←": 123, "LEFT": 123, "ARROWLEFT": 123, "左": 123,
+            "→": 124, "RIGHT": 124, "ARROWRIGHT": 124, "右": 124,
+            "TAB": 48, "⇥": 48, "制表": 48,
+            "RETURN": 36, "ENTER": 36, "↩": 36, "回车": 36,
+            "ESC": 53, "ESCAPE": 53, "⎋": 53,
+            "DELETE": 51, "BACKSPACE": 51, "⌫": 51, "退格": 51,
+            "SPACE": 49, "SPACEBAR": 49, "空格": 49,
+            "HOME": 115, "END": 119, "PAGEUP": 116, "PAGEDOWN": 121,
+            "F1": 122, "F2": 120, "F3": 99, "F4": 118, "F5": 96, "F6": 97,
+            "F7": 98, "F8": 100, "F9": 101, "F10": 109, "F11": 103, "F12": 111
+        ]
+        if let code = namedKeys[value] { return code }
+        let singleKeyCodes: [String: UInt16] = [
+            "A": 0, "S": 1, "D": 2, "F": 3, "H": 4, "G": 5, "Z": 6, "X": 7,
+            "C": 8, "V": 9, "B": 11, "Q": 12, "W": 13, "E": 14, "R": 15,
+            "Y": 16, "T": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22,
+            "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29,
+            "]": 30, "O": 31, "U": 32, "[": 33, "I": 34, "P": 35, "L": 37,
+            "J": 38, "'": 39, "K": 40, ";": 41, "\\": 42, ",": 43, "/": 44,
+            "N": 45, "M": 46, ".": 47
+        ]
+        return singleKeyCodes[value]
     }
 }
 

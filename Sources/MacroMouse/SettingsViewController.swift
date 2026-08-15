@@ -675,8 +675,10 @@ final class SettingsViewController: NSViewController, NSTableViewDataSource, NST
 private final class ActionEditorWindowController: NSWindowController, NSWindowDelegate {
     private let nameField = NSTextField()
     private let actionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let shortcutCaptureControl = ShortcutCaptureControl()
+    private let shortcutBuilder = ShortcutBuilderView()
     private let randomPathField = NSTextField()
+    private weak var recordedGesturePreview: GesturePreviewView?
+    private weak var recordedGesturePreviewTitle: NSTextField?
     private var capturedShortcut: KeyboardShortcut?
     private let editableName: Bool
 
@@ -689,7 +691,7 @@ private final class ActionEditorWindowController: NSWindowController, NSWindowDe
         editableName = name != nil
         capturedShortcut = action.shortcut
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: name == nil ? 280 : 320),
+            contentRect: NSRect(x: 0, y: 0, width: 834, height: name == nil ? 400 : 440),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -748,9 +750,9 @@ private final class ActionEditorWindowController: NSWindowController, NSWindowDe
 
         if editableName {
             let nameTitle = NSTextField(labelWithString: "图案名称")
-            nameTitle.frame = NSRect(x: 20, y: 270, width: 90, height: 20)
+            nameTitle.frame = NSRect(x: 20, y: 390, width: 90, height: 20)
             content.addSubview(nameTitle)
-            nameField.frame = NSRect(x: 115, y: 266, width: 260, height: 24)
+            nameField.frame = NSRect(x: 115, y: 386, width: 260, height: 24)
             nameField.stringValue = name ?? ""
             content.addSubview(nameField)
         }
@@ -760,37 +762,40 @@ private final class ActionEditorWindowController: NSWindowController, NSWindowDe
             previewTitle.font = .systemFont(ofSize: 10)
             previewTitle.textColor = .secondaryLabelColor
             previewTitle.frame = NSRect(x: 390, y: 245, width: 110, height: 16)
+            recordedGesturePreviewTitle = previewTitle
             content.addSubview(previewTitle)
 
             let preview = GesturePreviewView(frame: NSRect(x: 390, y: 198, width: 110, height: 43))
             preview.points = previewPoints
             preview.showsBadge = false
+            recordedGesturePreview = preview
             content.addSubview(preview)
         }
 
         let actionTitle = NSTextField(labelWithString: "执行动作")
-        actionTitle.frame = NSRect(x: 20, y: 220 - yOffset, width: 90, height: 20)
+        actionTitle.frame = NSRect(x: 20, y: 356, width: 90, height: 20)
         content.addSubview(actionTitle)
-        actionPopup.frame = NSRect(x: 115, y: 216 - yOffset, width: 260, height: 26)
+        actionPopup.frame = NSRect(x: 115, y: 352, width: 260, height: 26)
         GestureActionKind.allCases.forEach { actionPopup.addItem(withTitle: $0.title) }
         actionPopup.selectItem(at: GestureActionKind.allCases.firstIndex(of: action.kind) ?? 0)
         actionPopup.target = self
         actionPopup.action = #selector(actionKindChanged)
         content.addSubview(actionPopup)
 
-        let shortcutTitle = NSTextField(labelWithString: "组合键")
-        shortcutTitle.frame = NSRect(x: 20, y: 172 - yOffset, width: 90, height: 20)
+        let shortcutTitle = NSTextField(labelWithString: "组合键构建器")
+        shortcutTitle.frame = NSRect(x: 20, y: 328, width: 90, height: 20)
+        shortcutTitle.tag = 101
         content.addSubview(shortcutTitle)
-        shortcutCaptureControl.frame = NSRect(x: 115, y: 166 - yOffset, width: 300, height: 30)
-        shortcutCaptureControl.shortcut = capturedShortcut
-        shortcutCaptureControl.onCapture = { [weak self] shortcut in
+        shortcutBuilder.frame = NSRect(x: 36, y: 78, width: 760, height: 260)
+        shortcutBuilder.shortcut = capturedShortcut
+        shortcutBuilder.onShortcutChanged = { [weak self] shortcut in
             self?.capturedShortcut = shortcut
-            self?.updateEditorVisibility()
         }
-        content.addSubview(shortcutCaptureControl)
+        content.addSubview(shortcutBuilder)
 
         let pathTitle = NSTextField(labelWithString: "随机文本文件")
         pathTitle.frame = NSRect(x: 20, y: 122 - yOffset, width: 90, height: 20)
+        pathTitle.tag = 104
         content.addSubview(pathTitle)
         randomPathField.frame = NSRect(x: 115, y: 118 - yOffset, width: 300, height: 24)
         randomPathField.placeholderString = "留空则使用默认随机文本文件"
@@ -801,9 +806,11 @@ private final class ActionEditorWindowController: NSWindowController, NSWindowDe
         choosePath.tag = 102
         content.addSubview(choosePath)
 
-        let help = NSTextField(wrappingLabelWithString: "选择“自定义键盘组合键”后请录制快捷键。选择“随机文本”时可留空以使用全局默认文件。")
+        let help = NSTextField(wrappingLabelWithString: "组合键构建器：点选修饰键与方向键等特殊键；或点击“录制”后直接按字母、数字和普通组合键。系统保留快捷键是否响应取决于 macOS。")
         help.textColor = .secondaryLabelColor
-        help.frame = NSRect(x: 20, y: 59 - yOffset, width: 475, height: 38)
+        // 构建器自身的实时预览与各按钮的 ToolTip 已完整说明操作；不额外占用紧凑编辑窗口高度。
+        help.isHidden = true
+        help.tag = 103
         content.addSubview(help)
 
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel))
@@ -822,10 +829,14 @@ private final class ActionEditorWindowController: NSWindowController, NSWindowDe
 
     private func updateEditorVisibility() {
         let kind = selectedKind
-        shortcutCaptureControl.shortcut = capturedShortcut
-        shortcutCaptureControl.isHidden = kind != .keyboardShortcut
+        let usesShortcut = kind == .keyboardShortcut
+        shortcutBuilder.isHidden = !usesShortcut
+        window?.contentView?.viewWithTag(101)?.isHidden = !usesShortcut
+        recordedGesturePreview?.isHidden = usesShortcut
+        recordedGesturePreviewTitle?.isHidden = usesShortcut
         randomPathField.isHidden = kind != .randomText
         window?.contentView?.viewWithTag(102)?.isHidden = kind != .randomText
+        window?.contentView?.viewWithTag(104)?.isHidden = kind != .randomText
     }
 
     @objc private func chooseRandomTextFile() {
@@ -840,16 +851,21 @@ private final class ActionEditorWindowController: NSWindowController, NSWindowDe
 
     @objc private func save() {
         let kind = selectedKind
-        if kind == .keyboardShortcut && capturedShortcut == nil {
-            let alert = NSAlert()
-            alert.messageText = "请先录制组合键"
-            alert.informativeText = "自定义键盘组合键动作必须包含一个主按键。"
-            alert.runModal()
-            return
+        let parsedShortcut: KeyboardShortcut?
+        if kind == .keyboardShortcut {
+            guard let shortcut = shortcutBuilder.shortcut else {
+                shortcutBuilder.showValidationError()
+                NSSound.beep()
+                return
+            }
+            parsedShortcut = shortcut
+            capturedShortcut = shortcut
+        } else {
+            parsedShortcut = nil
         }
         let action = GestureAction(
             kind: kind,
-            shortcut: kind == .keyboardShortcut ? capturedShortcut : nil,
+            shortcut: parsedShortcut,
             randomTextPath: kind == .randomText ? randomPathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         )
         result = (editableName ? nameField.stringValue : nil, action)
@@ -882,62 +898,363 @@ private final class ActionEditorWindowController: NSWindowController, NSWindowDe
     }
 }
 
-private final class ShortcutCaptureControl: NSControl {
-    var shortcut: KeyboardShortcut? { didSet { needsDisplay = true } }
-    var onCapture: ((KeyboardShortcut) -> Void)?
+
+
+/// 不依赖系统快捷键派发的可视化组合键构建器。
+/// 修饰键和特殊主键可通过按钮明确选择；普通字母、数字和标点仍可用“录制”直接输入。
+
+/// 完整的 MacBook Pro 风格组合键构建器。
+/// 所有常见主键均可点击选择；修饰键可独立开关；“物理录制”保留给直接按键输入。
+
+/// 完整的 MacBook Pro 风格组合键构建器。
+/// 所有常见主键均可点击选择；修饰键可独立开关；“物理录制”保留给直接按键输入。
+private final class ShortcutBuilderView: NSView {
+    var shortcut: KeyboardShortcut? {
+        didSet { load(shortcut) }
+    }
+    var onShortcutChanged: ((KeyboardShortcut?) -> Void)?
+
+    private let preview = NSTextField(labelWithString: "未选择主键")
+    private let recordButton = NSButton(title: "物理录制", target: nil, action: nil)
+    private let clearButton = NSButton(title: "清空", target: nil, action: nil)
+    private var modifierButtons: [NSButton] = []
+    private var primaryButtons: [UInt16: [NSButton]] = [:]
+    private var stagedModifiers: NSEvent.ModifierFlags = []
+    private var primaryKeyCode: UInt16?
+    private var isRecording = false
 
     override var acceptsFirstResponder: Bool { true }
 
-    override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        needsDisplay = true
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        build()
     }
 
-    override func resignFirstResponder() -> Bool {
-        let result = super.resignFirstResponder()
-        needsDisplay = true
-        return result
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        build()
     }
 
-    override func becomeFirstResponder() -> Bool {
-        let result = super.becomeFirstResponder()
-        needsDisplay = true
-        return result
+    private func build() {
+        preview.alignment = .center
+        preview.font = NSFont.monospacedSystemFont(ofSize: 14, weight: .medium)
+        preview.frame = NSRect(x: 0, y: 237, width: 760, height: 18)
+        addSubview(preview)
+
+        recordButton.target = self
+        recordButton.action = #selector(togglePhysicalRecording)
+        recordButton.toolTip = "直接按真实键盘组合；Fn 仅在点击键盘中的 fn 键时加入"
+        recordButton.frame = NSRect(x: 0, y: 205, width: 76, height: 26)
+        addSubview(recordButton)
+        clearButton.target = self
+        clearButton.action = #selector(clearShortcut)
+        clearButton.frame = NSRect(x: 80, y: 205, width: 54, height: 26)
+        addSubview(clearButton)
+
+        buildFunctionRow()
+        buildNumberRow()
+        buildQRow()
+        buildARow()
+        buildZRow()
+        buildBottomRow()
+        refresh()
+    }
+
+    private func buildFunctionRow() {
+        var x: CGFloat = 0
+        addPrimary(title: "esc", keyCode: 53, x: x, y: 174, width: 44); x += 48
+        let keys: [(String, UInt16)] = [
+            ("F1", 122), ("F2", 120), ("F3", 99), ("F4", 118), ("F5", 96), ("F6", 97),
+            ("F7", 98), ("F8", 100), ("F9", 101), ("F10", 109), ("F11", 103), ("F12", 111)
+        ]
+        for (title, code) in keys {
+            addPrimary(title: title, keyCode: code, x: x, y: 174, width: 50)
+            x += 54
+        }
+        addPrimary(title: "⌦", keyCode: 117, x: x, y: 174, width: 64)
+    }
+
+    private func buildNumberRow() {
+        let keys: [(String, UInt16, CGFloat)] = [
+            ("~", 50, 44), ("1", 18, 46), ("2", 19, 46), ("3", 20, 46), ("4", 21, 46),
+            ("5", 23, 46), ("6", 22, 46), ("7", 26, 46), ("8", 28, 46), ("9", 25, 46),
+            ("0", 29, 46), ("-", 27, 46), ("=", 24, 46), ("delete", 51, 112)
+        ]
+        addPrimaryRow(keys, y: 143)
+    }
+
+    private func buildQRow() {
+        var x: CGFloat = 0
+        addPrimary(title: "tab", keyCode: 48, x: x, y: 112, width: 72); x += 76
+        let keys: [(String, UInt16, CGFloat)] = [
+            ("Q", 12, 46), ("W", 13, 46), ("E", 14, 46), ("R", 15, 46), ("T", 17, 46),
+            ("Y", 16, 46), ("U", 32, 46), ("I", 34, 46), ("O", 31, 46), ("P", 35, 46),
+            ("[", 33, 46), ("]", 30, 46), ("\\", 42, 84)
+        ]
+        for (title, code, width) in keys {
+            addPrimary(title: title, keyCode: code, x: x, y: 112, width: width)
+            x += width + 4
+        }
+    }
+
+    private func buildARow() {
+        var x: CGFloat = 0
+        addModifier(title: "caps", flag: .capsLock, x: x, y: 81, width: 88); x += 92
+        let keys: [(String, UInt16, CGFloat)] = [
+            ("A", 0, 46), ("S", 1, 46), ("D", 2, 46), ("F", 3, 46), ("G", 5, 46),
+            ("H", 4, 46), ("J", 38, 46), ("K", 40, 46), ("L", 37, 46), (";", 41, 46), ("'", 39, 46)
+        ]
+        for (title, code, width) in keys {
+            addPrimary(title: title, keyCode: code, x: x, y: 81, width: width)
+            x += width + 4
+        }
+        addPrimary(title: "return", keyCode: 36, x: x, y: 81, width: 118)
+    }
+
+    private func buildZRow() {
+        var x: CGFloat = 0
+        addModifier(title: "⇧ shift", flag: .shift, x: x, y: 50, width: 110); x += 114
+        let keys: [(String, UInt16, CGFloat)] = [
+            ("Z", 6, 46), ("X", 7, 46), ("C", 8, 46), ("V", 9, 46), ("B", 11, 46),
+            ("N", 45, 46), ("M", 46, 46), (",", 43, 46), (".", 47, 46), ("/", 44, 46)
+        ]
+        for (title, code, width) in keys {
+            addPrimary(title: title, keyCode: code, x: x, y: 50, width: width)
+            x += width + 4
+        }
+        addModifier(title: "⇧ shift", flag: .shift, x: x, y: 50, width: 146)
+    }
+
+    private func buildBottomRow() {
+        var x: CGFloat = 0
+        addModifier(title: "fn", flag: .function, x: x, y: 19, width: 36); x += 40
+        addModifier(title: "⌃ ctrl", flag: .control, x: x, y: 19, width: 52); x += 56
+        addModifier(title: "⌥ opt", flag: .option, x: x, y: 19, width: 52); x += 56
+        addModifier(title: "⌘ cmd", flag: .command, x: x, y: 19, width: 60); x += 64
+        addPrimary(title: "space", keyCode: 49, x: x, y: 19, width: 300); x += 304
+        addModifier(title: "⌘ cmd", flag: .command, x: x, y: 19, width: 60); x += 64
+        addModifier(title: "⌥ opt", flag: .option, x: x, y: 19, width: 52); x += 56
+        // MacBook Pro 的方向十字：上/下为中间窄半键，左/右为同一基线的完整键帽。
+        addPrimary(title: "←", keyCode: 123, x: 648, y: 19, width: 34)
+        addPrimary(title: "↑", keyCode: 126, x: 686, y: 33, width: 34, height: 13)
+        addPrimary(title: "↓", keyCode: 125, x: 686, y: 19, width: 34, height: 13)
+        addPrimary(title: "→", keyCode: 124, x: 724, y: 19, width: 36)
+    }
+
+    private func addPrimaryRow(_ keys: [(String, UInt16, CGFloat)], y: CGFloat) {
+        var x: CGFloat = 0
+        for (title, code, width) in keys {
+            addPrimary(title: title, keyCode: code, x: x, y: y, width: width)
+            x += width + 4
+        }
+    }
+
+    private func addPrimary(title: String, keyCode: UInt16, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat = 27) {
+        let button = keyButton(title: title, x: x, y: y, width: width, height: height)
+        button.setButtonType(.toggle)
+        button.tag = Int(keyCode)
+        button.target = self
+        button.action = #selector(selectPrimary(_:))
+        addSubview(button)
+        primaryButtons[keyCode, default: []].append(button)
+    }
+
+    private func addModifier(title: String, flag: NSEvent.ModifierFlags, x: CGFloat, y: CGFloat, width: CGFloat) {
+        let button = keyButton(title: title, x: x, y: y, width: width)
+        button.setButtonType(.toggle)
+        button.tag = Int(flag.rawValue)
+        button.target = self
+        button.action = #selector(toggleModifier(_:))
+        addSubview(button)
+        modifierButtons.append(button)
+    }
+
+    private func keyButton(title: String, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat = 27) -> NSButton {
+        let button = KeyboardKeyButton(keyTitle: title)
+        let isFunctionKey = title.hasPrefix("F") && title.count >= 2
+        button.labelFont = NSFont.systemFont(ofSize: isFunctionKey ? 10.5 : (title.count > 5 ? 10 : 12), weight: .regular)
+        button.frame = NSRect(x: x, y: y, width: width, height: height)
+        return button
     }
 
     override func keyDown(with event: NSEvent) {
-        // Esc 仅移除焦点，不清空已有组合键，避免误操作。
-        if event.keyCode == 53 {
-            window?.makeFirstResponder(nil)
+        guard isRecording, !event.isARepeat else {
+            super.keyDown(with: event)
             return
         }
-        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift, .function])
-        let value = KeyboardShortcut(keyCode: event.keyCode, flags: modifiers)
-        shortcut = value
-        onCapture?(value)
+        if event.keyCode == 53 {
+            stopPhysicalRecording()
+            return
+        }
+        if event.keyCode == 51 {
+            clearShortcut()
+            return
+        }
+        // 某些键盘会将方向键携带为 Fn 功能层；Fn 只接受界面上的显式选择。
+        stagedModifiers = event.modifierFlags.intersection([.control, .option, .shift, .command, .capsLock])
+        primaryKeyCode = event.keyCode
+        stopPhysicalRecording()
+        commit()
+    }
+
+    @objc private func togglePhysicalRecording() {
+        if isRecording {
+            stopPhysicalRecording()
+            return
+        }
+        isRecording = true
+        recordButton.title = "等待按键…"
+        window?.makeFirstResponder(self)
+        refresh()
+    }
+
+    private func stopPhysicalRecording() {
+        isRecording = false
+        recordButton.title = "物理录制"
+        if window?.firstResponder === self {
+            window?.makeFirstResponder(nil)
+        }
+        refresh()
+    }
+
+    @objc private func toggleModifier(_ sender: NSButton) {
+        let flag = NSEvent.ModifierFlags(rawValue: UInt(sender.tag))
+        if stagedModifiers.contains(flag) {
+            stagedModifiers.remove(flag)
+        } else {
+            stagedModifiers.insert(flag)
+        }
+        commit()
+    }
+
+    @objc private func selectPrimary(_ sender: NSButton) {
+        let selectedCode = UInt16(sender.tag)
+        // 主键与修饰键均采用开关语义：再次点击同一主键会取消该主键。
+        primaryKeyCode = (primaryKeyCode == selectedCode) ? nil : selectedCode
+        commit()
+    }
+
+    @objc private func clearShortcut() {
+        stopPhysicalRecording()
+        stagedModifiers = []
+        primaryKeyCode = nil
+        shortcut = nil
+        onShortcutChanged?(nil)
+    }
+
+    func showValidationError() {
+        preview.stringValue = "请先选择一个主键"
+        preview.textColor = .systemRed
+        NSSound.beep()
+    }
+
+    private func load(_ shortcut: KeyboardShortcut?) {
+        guard let shortcut else {
+            stagedModifiers = []
+            primaryKeyCode = nil
+            refresh()
+            return
+        }
+        stagedModifiers = NSEvent.ModifierFlags(rawValue: UInt(shortcut.modifierFlags))
+            .intersection([.control, .option, .shift, .command, .function, .capsLock])
+        primaryKeyCode = shortcut.keyCode
+        refresh()
+    }
+
+    private func commit() {
+        guard let primaryKeyCode else {
+            refresh()
+            onShortcutChanged?(nil)
+            return
+        }
+        shortcut = KeyboardShortcut(keyCode: primaryKeyCode, flags: stagedModifiers)
+        onShortcutChanged?(shortcut)
+    }
+
+    private func refresh() {
+        modifierButtons.forEach { button in
+            let flag = NSEvent.ModifierFlags(rawValue: UInt(button.tag))
+            button.state = stagedModifiers.contains(flag) ? .on : .off
+        }
+        primaryButtons.forEach { code, buttons in
+            let selected = code == primaryKeyCode
+            buttons.forEach { $0.state = selected ? .on : .off }
+        }
+        if let primaryKeyCode {
+            preview.stringValue = KeyboardShortcut(keyCode: primaryKeyCode, flags: stagedModifiers).displayString
+            preview.textColor = .labelColor
+        } else if isRecording {
+            preview.stringValue = "请按一个主键（Esc 取消）"
+            preview.textColor = .secondaryLabelColor
+        } else {
+            preview.stringValue = stagedModifiers.isEmpty
+                ? "未选择主键"
+                : "\(KeyboardShortcut.modifierDisplayString(stagedModifiers)) · 请选择主键"
+            preview.textColor = .secondaryLabelColor
+        }
+    }
+}
+
+
+/// 用统一的自绘键帽保证所有标签（尤其 F10–F12）在任意系统按钮样式下完整可见。
+private final class KeyboardKeyButton: NSButton {
+    var labelFont: NSFont = .systemFont(ofSize: 12, weight: .regular) {
+        didSet { needsDisplay = true }
+    }
+
+    convenience init(keyTitle: String) {
+        self.init(frame: .zero)
+        title = keyTitle
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        bezelStyle = .regularSquare
+        focusRingType = .none
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isBordered = false
+        focusRingType = .none
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        let focused = window?.firstResponder === self
-        let fillColor = NSColor.controlBackgroundColor
-        let strokeColor = focused ? NSColor.controlAccentColor : NSColor.separatorColor
-        fillColor.setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4).fill()
-        strokeColor.setStroke()
-        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
-        border.lineWidth = focused ? 2 : 1
-        border.stroke()
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let radius = min(6, rect.height / 3)
+        let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        let selected = state == .on
+        let fill: NSColor
+        if !isEnabled {
+            fill = NSColor.controlBackgroundColor.withAlphaComponent(0.72)
+        } else if selected {
+            fill = NSColor.controlAccentColor.withAlphaComponent(0.22)
+        } else {
+            fill = NSColor.controlBackgroundColor
+        }
+        fill.setFill()
+        path.fill()
+        (selected ? NSColor.controlAccentColor : NSColor.separatorColor.withAlphaComponent(0.7)).setStroke()
+        path.lineWidth = selected ? 1.3 : 0.7
+        path.stroke()
 
-        let text = shortcut?.displayString ?? "点击此框后直接按下组合键"
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.lineBreakMode = .byClipping
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: shortcut == nil ? NSColor.placeholderTextColor : NSColor.labelColor
+            .font: labelFont,
+            .foregroundColor: isEnabled ? NSColor.labelColor : NSColor.disabledControlTextColor,
+            .paragraphStyle: style
         ]
-        let size = (text as NSString).size(withAttributes: attributes)
-        (text as NSString).draw(
-            at: NSPoint(x: 9, y: (bounds.height - size.height) / 2),
-            withAttributes: attributes
+        let text = title as NSString
+        let textSize = text.size(withAttributes: attributes)
+        let textRect = NSRect(
+            x: rect.minX + 2,
+            y: rect.midY - textSize.height / 2 - 0.5,
+            width: max(0, rect.width - 4),
+            height: textSize.height
         )
+        text.draw(in: textRect, withAttributes: attributes)
     }
 }

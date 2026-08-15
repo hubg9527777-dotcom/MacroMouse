@@ -114,10 +114,43 @@ enum ActionExecutor {
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
         else { return }
-        keyDown.flags = flags
-        keyUp.flags = flags
+
+        // 部分系统级快捷键（尤其是 Control + 方向键）要求收到完整的修饰键按下序列。
+        // macOS 将方向键归入功能层键；合成方向键必须带 SecondaryFn，系统才会走与真实键盘一致的快捷键匹配路径。
+        // 该补充仅发生在投递阶段，不会污染用户保存或界面显示的“⌃↑”配置。
+        var effectiveFlags = flags
+        if [kVK_LeftArrow, kVK_RightArrow, kVK_DownArrow, kVK_UpArrow].contains(keyCode) {
+            effectiveFlags.insert(.maskSecondaryFn)
+        }
+        let modifierKeys: [(flag: CGEventFlags, keyCode: CGKeyCode)] = [
+            (.maskControl, CGKeyCode(kVK_Control)),
+            (.maskAlternate, CGKeyCode(kVK_Option)),
+            (.maskShift, CGKeyCode(kVK_Shift)),
+            (.maskCommand, CGKeyCode(kVK_Command)),
+            (.maskSecondaryFn, CGKeyCode(kVK_Function)),
+            (.maskAlphaShift, CGKeyCode(kVK_CapsLock))
+        ]
+        let requiredModifiers = modifierKeys.filter { effectiveFlags.contains($0.flag) }
+        var activeFlags: CGEventFlags = []
+
+        for modifier in requiredModifiers {
+            activeFlags.insert(modifier.flag)
+            guard let modifierDown = CGEvent(keyboardEventSource: source, virtualKey: modifier.keyCode, keyDown: true) else { continue }
+            modifierDown.flags = activeFlags
+            modifierDown.post(tap: .cghidEventTap)
+        }
+
+        keyDown.flags = activeFlags
+        keyUp.flags = activeFlags
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+
+        for modifier in requiredModifiers.reversed() {
+            activeFlags.remove(modifier.flag)
+            guard let modifierUp = CGEvent(keyboardEventSource: source, virtualKey: modifier.keyCode, keyDown: false) else { continue }
+            modifierUp.flags = activeFlags
+            modifierUp.post(tap: .cghidEventTap)
+        }
     }
 
     private static func copyAXElement(_ element: AXUIElement, attribute: CFString) -> AXUIElement? {
