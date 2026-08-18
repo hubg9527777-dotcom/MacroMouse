@@ -33,6 +33,11 @@ final class WindowFocusController {
             return nil
         }
 
+        // 已在前台的原生应用（例如 Teams、Slack、Electron / WebView 客户端）
+        // 仍可能把光标放在内部文本编辑器中。重复设置 AXMain / AXFocusedWindow 会使
+        // 这类客户端丢失编辑器焦点；此处只记录其 PID，保留原生输入焦点。
+        guard !application.isActive, !isNestedInsideFrontmostApplication(application) else { return pid }
+
         let applicationElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(applicationElement, messagingTimeout)
 
@@ -58,7 +63,18 @@ final class WindowFocusController {
     @discardableResult
     func reactivateApplication(pid: pid_t) -> Bool {
         guard let application = NSRunningApplication(processIdentifier: pid), !application.isTerminated else { return false }
+        guard !application.isActive, !isNestedInsideFrontmostApplication(application) else { return true }
         return application.activate(options: [.activateIgnoringOtherApps])
+    }
+
+    /// WebView / Electron 输入元素通常属于嵌套 helper 进程。若其宿主应用已在最前，
+    /// 对 helper 的应用级激活会夺走宿主内部编辑器焦点，因而必须将其视为前台目标。
+    private func isNestedInsideFrontmostApplication(_ application: NSRunningApplication) -> Bool {
+        guard let childPath = application.bundleURL?.standardizedFileURL.path,
+              let frontmostPath = NSWorkspace.shared.frontmostApplication?.bundleURL?.standardizedFileURL.path,
+              childPath != frontmostPath
+        else { return false }
+        return childPath.hasPrefix(frontmostPath + "/")
     }
 
     private func nearestWindow(above element: AXUIElement) -> AXUIElement? {
