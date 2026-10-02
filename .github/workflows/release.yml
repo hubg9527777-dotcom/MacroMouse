@@ -19,16 +19,33 @@ permissions:
 jobs:
   build-attest-release:
     name: Build, attest, and publish macOS release
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
+      - name: Validate release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release_tag 必须是 vMAJOR.MINOR.PATCH 格式的版本标签"
+            exit 1
+          fi
+
       - name: Check out immutable release source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
 
       - name: Build universal application package
         shell: bash

@@ -67,8 +67,8 @@ enum ActionExecutor {
                     postKeyboardShortcut(keyCode: kVK_ANSI_V, flags: .maskCommand)
                 }
             } catch {
-                // 不记录文件内容，仅记录可诊断的错误原因。
-                print("⚠️ 随机文本动作失败：\(error.localizedDescription)")
+                // 文件错误的 localizedDescription 可能包含用户配置的完整路径。
+                print("⚠️ 随机文本动作失败：无法读取或处理文本文件")
             }
         }
     }

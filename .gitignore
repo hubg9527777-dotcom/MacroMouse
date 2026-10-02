@@ -1,7 +1,13 @@
 .build/
 dist/
+backups/
 *.xcodeproj
 *.xcworkspace
 .DS_Store
 *.o
 *.d
+.env
+.env.*
+!.env.example
+
+/dist/
